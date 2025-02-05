@@ -1,4 +1,4 @@
-FROM golang:1.22-alpine
+FROM golang:1.23-alpine
 
 RUN apk update && apk add libwebp-dev g++ git
-RUN go install github.com/a-h/templ/cmd/templ@v0.2.598
+RUN go install github.com/a-h/templ/cmd/templ@v0.3.833
