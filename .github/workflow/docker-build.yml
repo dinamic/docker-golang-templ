@@ -1,0 +1,58 @@
+# .github/workflows/docker-build.yml
+name: Build and Push Docker Image on Tag
+
+on:
+  push:
+    tags:
+      - 'v*' # Trigger on tags starting with 'v' (e.g., v1.0, v2.1.3)
+      # - '*' # Or use '*' to trigger on *any* tag
+      # - '*.*.*' # Or use this for semantic versioning tags like 1.0.0
+
+jobs:
+  build-and-push:
+    name: Build and Push Multi-Platform Image
+    runs-on: ubuntu-latest # Use a standard Linux runner
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        # Needed for cross-platform builds
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        # Sets up the buildx builder instance
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        id: build-push # Give the step an ID to reference its outputs if needed
+        uses: docker/build-push-action@v6
+        with:
+          context: . # Use the root directory as context (where Dockerfile is)
+          # file: ./path/to/your/Dockerfile # Specify if not named 'Dockerfile' or not in root
+          platforms: linux/amd64,linux/arm64
+          push: true # Push the image to the registry
+          tags: | # Tags for the image
+            # Use github.ref_name which directly contains the tag name when triggered by a tag
+            dinamic/golang-templ:${{ github.ref_name }}
+            # Optionally, also update 'latest' tag (remove if you don't want this)
+            dinamic/golang-templ:latest
+          # Optional: enable build cache for faster builds
+          # cache-from: type=gha
+          # cache-to: type=gha,mode=max
+
+      # Optional: Logout
+      # - name: Log out from Docker Hub
+      #   run: docker logout
+
+      # Optional: Output the tag used (for verification)
+      - name: Print pushed tags
+        run: |
+          echo "Pushed Docker tags: dinamic/golang-templ:${{ github.ref_name }}, dinamic/golang-templ:latest"
