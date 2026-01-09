@@ -33,6 +33,12 @@ Images are automatically built and pushed to Docker Hub when tags are created:
    - Push to Docker Hub with both the version tag and `latest`
    - Requires `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` secrets
 
+3. **Create a GitHub release** for the tag:
+   ```bash
+   gh release create v0.3.977 --title "v0.3.977" --notes "- Bump Go to X.X.X
+   - Bump templ to vX.X.X"
+   ```
+
 **Note:** The workflow includes special handling for tags created via GitHub UI vs git push, extracting tag names differently for each event type.
 
 ## Architecture
