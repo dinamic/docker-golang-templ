@@ -4,12 +4,12 @@ name: Build and Push Docker Image on Tag
 on:
   push:
     tags:
-      - 'v*' # Trigger on tags starting with 'v' pushed via git
+      - 'go*' # Trigger on tags matching go<version>-templ<version> pattern
   create: # Trigger when a ref (branch or tag) is created via UI or API
 
 jobs:
   build-and-push:
-    if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'create' && github.ref_type == 'tag' && startsWith(github.ref, 'v'))
+    if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/go')) || (github.event_name == 'create' && github.ref_type == 'tag' && startsWith(github.ref, 'go'))
     name: Build and Push Multi-Platform Image
     runs-on: ubuntu-latest
 
@@ -31,12 +31,12 @@ jobs:
              TAG_NAME=${GITHUB_REF}
           fi
 
-          # Ensure it matches the desired 'v*' pattern
-          if [[ "$TAG_NAME" =~ ^v.+ ]]; then
+          # Ensure it matches the desired 'go*' pattern
+          if [[ "$TAG_NAME" =~ ^go.+ ]]; then
              echo "tag=${TAG_NAME}" >> $GITHUB_OUTPUT
              echo "Using tag: ${TAG_NAME}"
           else
-             echo "Ref '${TAG_NAME}' is not a valid 'v*' tag. Skipping build."
+             echo "Ref '${TAG_NAME}' is not a valid 'go*' tag. Skipping build."
              # Optional: Exit cleanly to stop subsequent steps if needed
              # exit 78 # Neutral exit code
              echo "tag=" >> $GITHUB_OUTPUT # Ensure output is empty if invalid
