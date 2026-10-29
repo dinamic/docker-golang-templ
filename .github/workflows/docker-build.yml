@@ -28,8 +28,11 @@ jobs:
             TAG_NAME=${GITHUB_REF}
           fi
 
-          if [[ "$TAG_NAME" =~ ^go.+ ]]; then
-            echo "tag=${TAG_NAME}" >> $GITHUB_OUTPUT
+          # Whitelist, not a prefix check: the tag is a user-controlled string and
+          # ends up in a docker command. Allowing only go + alnum/.-_ means no
+          # substitution, quoting or newline can ride along.
+          if [[ "$TAG_NAME" =~ ^go[0-9A-Za-z._-]+$ ]]; then
+            printf 'tag=%s\n' "$TAG_NAME" >> "$GITHUB_OUTPUT"
             echo "Using tag: ${TAG_NAME}"
           else
             echo "Ref '${TAG_NAME}' is not a valid 'go*' tag. Skipping build."
@@ -115,14 +118,20 @@ jobs:
 
       # A manifest list is just a tag pointing at several platform digests.
       # Consumers pull the same tag as before and Docker resolves their platform.
+      # The tag reaches the shell through the environment and is quoted, so it is
+      # data rather than code. `${{ }}` inside run: would be substituted before the
+      # shell ever sees it, which turns a crafted tag into a command.
       - name: Create manifest list and push
         working-directory: /tmp/digests
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
         run: |
           docker buildx imagetools create \
-            -t dinamic/golang-templ:${{ needs.prepare.outputs.tag }} \
+            -t "dinamic/golang-templ:${TAG}" \
             -t dinamic/golang-templ:latest \
             $(printf 'dinamic/golang-templ@sha256:%s ' *)
 
       - name: Verify the published manifest
-        run: |
-          docker buildx imagetools inspect dinamic/golang-templ:${{ needs.prepare.outputs.tag }}
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: docker buildx imagetools inspect "dinamic/golang-templ:${TAG}"
