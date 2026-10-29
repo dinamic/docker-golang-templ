@@ -1,76 +1,137 @@
 # .github/workflows/docker-build.yml
+#
+# Multi-arch build without QEMU: each architecture is built on a native runner,
+# pushed by digest, and the two digests are merged into one manifest list.
 name: Build and Push Docker Image on Tag
 
 on:
   push:
     tags:
-      - 'go*' # Trigger on tags matching go<version>-templ<version> pattern
-  create: # Trigger when a ref (branch or tag) is created via UI or API
+      - 'go*' # go<version>-templ<version>
+  create: # tag created through the UI/API also fires this
 
 jobs:
-  build-and-push:
-    if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/go')) || (github.event_name == 'create' && github.ref_type == 'tag' && startsWith(github.ref, 'go'))
-    name: Build and Push Multi-Platform Image
+  prepare:
+    name: Resolve tag
     runs-on: ubuntu-latest
-
+    outputs:
+      tag: ${{ steps.extract_tag.outputs.tag }}
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      # Add a step to reliably get the tag name for both events
       - name: Extract tag name
         id: extract_tag
         shell: bash
         run: |
           TAG_NAME=""
-          # For push or create tag events, github.ref is 'refs/tags/tagname'
-          # For create tag event, github.ref is just 'tagname'
           if [[ "${{ github.event_name }}" == "push" ]]; then
             TAG_NAME=${GITHUB_REF#refs/tags/}
           elif [[ "${{ github.event_name }}" == "create" && "${{ github.ref_type }}" == "tag" ]]; then
-             TAG_NAME=${GITHUB_REF}
+            TAG_NAME=${GITHUB_REF}
           fi
 
-          # Ensure it matches the desired 'go*' pattern
-          if [[ "$TAG_NAME" =~ ^go.+ ]]; then
-             echo "tag=${TAG_NAME}" >> $GITHUB_OUTPUT
-             echo "Using tag: ${TAG_NAME}"
+          # Whitelist, not a prefix check: the tag is a user-controlled string and
+          # ends up in a docker command. Allowing only go + alnum/.-_ means no
+          # substitution, quoting or newline can ride along.
+          if [[ "$TAG_NAME" =~ ^go[0-9A-Za-z._-]+$ ]]; then
+            printf 'tag=%s\n' "$TAG_NAME" >> "$GITHUB_OUTPUT"
+            echo "Using tag: ${TAG_NAME}"
           else
-             echo "Ref '${TAG_NAME}' is not a valid 'go*' tag. Skipping build."
-             # Optional: Exit cleanly to stop subsequent steps if needed
-             # exit 78 # Neutral exit code
-             echo "tag=" >> $GITHUB_OUTPUT # Ensure output is empty if invalid
+            echo "Ref '${TAG_NAME}' is not a valid 'go*' tag. Skipping build."
+            echo "tag=" >> $GITHUB_OUTPUT
           fi
 
-      - name: Set up QEMU
-        if: steps.extract_tag.outputs.tag != '' # Run only if tag is valid
-        uses: docker/setup-qemu-action@v3
+  build:
+    name: Build ${{ matrix.platform }}
+    needs: prepare
+    if: needs.prepare.outputs.tag != ''
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Native x86_64 runner, no emulation.
+          - platform: linux/amd64
+            runner: ubuntu-latest
+            scope: amd64
+          # Native arm64 runner (GitHub-hosted since 2026-01), no emulation.
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            scope: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
 
       - name: Set up Docker Buildx
-        if: steps.extract_tag.outputs.tag != '' # Run only if tag is valid
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to Docker Hub
-        if: steps.extract_tag.outputs.tag != '' # Run only if tag is valid
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build and push Docker image
-        if: steps.extract_tag.outputs.tag != '' # Run only if tag is valid
+      - name: Build and push by digest
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: |
-            dinamic/golang-templ:${{ steps.extract_tag.outputs.tag }}
-            dinamic/golang-templ:latest
-          # cache-from: type=gha # Optional cache
-          # cache-to: type=gha,mode=max # Optional cache
+          platforms: ${{ matrix.platform }}
+          # Push by digest only: a per-platform tag would race between the two
+          # jobs and temporarily publish a single-arch image under the real tag.
+          outputs: type=image,name=dinamic/golang-templ,push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=${{ matrix.scope }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.scope }}
 
-      - name: Print pushed tags
-        if: steps.extract_tag.outputs.tag != '' # Run only if tag is valid
+      - name: Export digest
         run: |
-          echo "Pushed Docker tags: dinamic/golang-templ:${{ steps.extract_tag.outputs.tag }}, dinamic/golang-templ:latest"
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.scope }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    name: Publish manifest list
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # A manifest list is just a tag pointing at several platform digests.
+      # Consumers pull the same tag as before and Docker resolves their platform.
+      # The tag reaches the shell through the environment and is quoted, so it is
+      # data rather than code. `${{ }}` inside run: would be substituted before the
+      # shell ever sees it, which turns a crafted tag into a command.
+      - name: Create manifest list and push
+        working-directory: /tmp/digests
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          docker buildx imagetools create \
+            -t "dinamic/golang-templ:${TAG}" \
+            -t dinamic/golang-templ:latest \
+            $(printf 'dinamic/golang-templ@sha256:%s ' *)
+
+      - name: Verify the published manifest
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: docker buildx imagetools inspect "dinamic/golang-templ:${TAG}"
